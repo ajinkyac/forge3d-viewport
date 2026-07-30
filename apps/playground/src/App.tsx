@@ -1,7 +1,8 @@
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
 import { useFrame } from '@react-three/fiber';
 import type { Mesh } from 'three';
 import { Viewport } from '@forge3d/viewport';
+import type { ControlsMode } from '@forge3d/viewport';
 
 function RotatingBox() {
   const meshRef = useRef<Mesh>(null);
@@ -20,10 +21,28 @@ function RotatingBox() {
   );
 }
 
+const CONTROLS_MODES: ControlsMode[] = ['cad', 'orbit', 'fly'];
+
 export default function App() {
+  const [controlsMode, setControlsMode] = useState<ControlsMode>('cad');
+
   return (
-    <Viewport lighting="default">
-      <RotatingBox />
-    </Viewport>
+    <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+      <div style={{ position: 'absolute', top: 12, left: 12, zIndex: 1 }}>
+        <select
+          value={controlsMode}
+          onChange={(event) => setControlsMode(event.target.value as ControlsMode)}
+        >
+          {CONTROLS_MODES.map((mode) => (
+            <option key={mode} value={mode}>
+              {mode}
+            </option>
+          ))}
+        </select>
+      </div>
+      <Viewport controls={controlsMode} lighting="default">
+        <RotatingBox />
+      </Viewport>
+    </div>
   );
 }
