@@ -1,17 +1,20 @@
-import { useRef, useEffect, useMemo } from 'react';
-import type { ReactNode, CSSProperties, MutableRefObject } from 'react';
+import { useRef, useEffect, useCallback, useMemo, useState } from 'react';
+import type { ReactNode, CSSProperties, MutableRefObject, RefObject } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { Color } from 'three';
-import type { PerspectiveCamera, Scene, WebGLRenderer, ColorRepresentation } from 'three';
+import { Box3, Color } from 'three';
+import type { Object3D, PerspectiveCamera, Scene, WebGLRenderer, ColorRepresentation } from 'three';
 import type { OrbitControls } from 'three-stdlib';
 import { ViewportContext } from './ViewportContext';
 import type { ViewportContextValue } from './ViewportContext';
 import { createControls } from './controls';
 import type { ControlsMode } from './controls';
+import { computeVisibleBounds, frameBox, takeScreenshot } from './actions';
+import type { ScreenshotOptions } from './actions';
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
 export type { ControlsMode } from './controls';
+export type { ScreenshotOptions } from './actions';
 
 export interface CameraConfig {
   position?: [number, number, number];
@@ -21,9 +24,9 @@ export interface CameraConfig {
 }
 
 export interface ViewportAPI {
-  fitToView: () => void;
-  frameObject: () => void;
-  screenshot: () => void;
+  fitToView: () => Promise<void>;
+  frameObject: (ref: RefObject<Object3D>) => Promise<void>;
+  screenshot: (options: ScreenshotOptions) => Promise<Blob>;
   controlsRef: MutableRefObject<OrbitControls | null>;
 }
 
@@ -69,24 +72,27 @@ function ViewportBridge({ ctx, background, onReady, api }: BridgeProps) {
 
 interface ControlsRigProps {
   mode: ControlsMode;
-  controlsRef: MutableRefObject<OrbitControls | null>;
+  onControlsChange: (controls: OrbitControls | null) => void;
 }
 
-function ControlsRig({ mode, controlsRef }: ControlsRigProps) {
+function ControlsRig({ mode, onControlsChange }: ControlsRigProps) {
   const { camera, gl } = useThree();
+  const activeRef = useRef<OrbitControls | null>(null);
 
   useEffect(() => {
     const handle = createControls(mode, camera as PerspectiveCamera, gl.domElement);
-    controlsRef.current = handle.controls;
+    activeRef.current = handle.controls;
+    onControlsChange(handle.controls);
 
     return () => {
       handle.dispose();
-      controlsRef.current = null;
+      activeRef.current = null;
+      onControlsChange(null);
     };
-  }, [mode, camera, gl]);
+  }, [mode, camera, gl, onControlsChange]);
 
   useFrame(() => {
-    controlsRef.current?.update();
+    activeRef.current?.update();
   });
 
   return null;
@@ -107,7 +113,7 @@ export function Viewport({
   children,
   background,
   camera,
-  controls,
+  controls: controlsModeProp,
   lighting,
   onReady,
   style,
@@ -117,14 +123,43 @@ export function Viewport({
   const sceneRef = useRef<Scene | null>(null);
   const glRef = useRef<WebGLRenderer | null>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
+  const [controls, setControls] = useState<OrbitControls | null>(null);
 
-  const ctx = useMemo<ViewportContextValue>(() => ({ cameraRef, sceneRef, glRef }), []);
+  const handleControlsChange = useCallback((next: OrbitControls | null) => {
+    controlsRef.current = next;
+    setControls(next);
+  }, []);
+
+  const ctx = useMemo<ViewportContextValue>(
+    () => ({ cameraRef, sceneRef, glRef, controls }),
+    [controls]
+  );
 
   const api = useMemo<ViewportAPI>(
     () => ({
-      fitToView: () => console.warn('[Viewport] fitToView: not implemented'),
-      frameObject: () => console.warn('[Viewport] frameObject: not implemented'),
-      screenshot: () => console.warn('[Viewport] screenshot: not implemented'),
+      fitToView: async () => {
+        const scene = sceneRef.current;
+        const cam = cameraRef.current;
+        if (!scene || !cam) return;
+        const box = computeVisibleBounds(scene);
+        await frameBox(cam, controlsRef.current, box);
+      },
+      frameObject: async (ref) => {
+        const cam = cameraRef.current;
+        const object = ref.current;
+        if (!cam || !object) return;
+        const box = new Box3().setFromObject(object);
+        await frameBox(cam, controlsRef.current, box);
+      },
+      screenshot: (options) => {
+        const scene = sceneRef.current;
+        const cam = cameraRef.current;
+        const gl = glRef.current;
+        if (!scene || !cam || !gl) {
+          return Promise.reject(new Error('[Viewport] screenshot: viewport is not ready'));
+        }
+        return takeScreenshot(scene, cam, gl, options);
+      },
       controlsRef,
     }),
     []
@@ -137,13 +172,13 @@ export function Viewport({
     far: camera?.far ?? 1000,
   };
 
-  const controlsMode = controls ?? 'cad';
+  const controlsMode = controlsModeProp ?? 'cad';
 
   return (
     <div style={{ width: '100%', height: '100%', ...style }} className={className}>
       <Canvas gl={{ antialias: true }} dpr={[1, 2]} shadows camera={resolvedCamera}>
         <ViewportContext.Provider value={ctx}>
-          <ControlsRig mode={controlsMode} controlsRef={controlsRef} />
+          <ControlsRig mode={controlsMode} onControlsChange={handleControlsChange} />
           <ViewportBridge ctx={ctx} background={background} onReady={onReady} api={api} />
           {lighting === 'default' && <DefaultLighting />}
           {children}
